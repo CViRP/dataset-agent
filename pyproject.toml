@@ -1,17 +1,37 @@
 [project]
 name = "agent-dataset"
 version = "0.1.0"
-description = "Add your description here"
+description = "API-first, evidence-based dataset analysis agent"
 readme = "README.md"
 authors = [
     { name = "Yousef", email = "yousef.yousefian.85@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "pydantic-settings>=2.7,<3",
+    "python-multipart>=0.0.20,<1", "pandas>=2.2,<4", "numpy>=2.2,<3",
+    "pyarrow>=19,<30", "openpyxl>=3.1,<4", "duckdb>=1.2,<2",
+    "sqlglot>=26,<31", "scipy>=1.15,<2", "statsmodels>=0.14,<1",
+    "matplotlib>=3.10,<4", "pypdf>=5,<7", "python-docx>=1.1,<2",
+    "reportlab>=4.3,<5", "jinja2>=3.1,<4", "openai>=2,<3",
+    "anthropic>=0.49,<1", "httpx>=0.28,<1", "mcp>=1.9,<2", "psutil>=6,<8",
+    "portalocker>=3,<4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
 
 [project.scripts]
 agent-dataset = "agent_dataset:main"
+agent-dataset-mcp = "agent_dataset.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"

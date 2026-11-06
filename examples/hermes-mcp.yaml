@@ -1,0 +1,10 @@
+# Merge this section into ~/.hermes/config.yaml after the Dataset API is running.
+# Existing Hermes settings are deliberately not modified by this project.
+mcp_servers:
+  dataset_analysis:
+    command: 'E:\projects\agent_dataset\.venv\Scripts\python.exe'
+    args: ["-m", "agent_dataset.mcp_server"]
+    env:
+      DATA_AGENT_API_URL: "http://127.0.0.1:8000"
+      # Match a key in DATA_AGENT_API_KEYS if authentication is enabled.
+      # DATA_AGENT_MCP_API_KEY: "your-project-api-token"
