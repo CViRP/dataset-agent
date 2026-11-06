@@ -1,0 +1,17 @@
+# Allow only image inputs into the build context. Keep credentials, datasets,
+# local Windows .venv, caches, Git history, and test artifacts out of the image.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.pem
+**/*.key

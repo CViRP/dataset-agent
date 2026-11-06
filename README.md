@@ -28,6 +28,8 @@ The demo prints actual artifact download paths. It uses synthetic sales data fro
 
 ## API workflow
 
+For container deployment, see [Docker Compose](#docker-compose) below.
+
 1. Upload a file with `POST /datasets` as multipart form data. It returns `202` and a job `id`.
 2. Poll `GET /jobs/{id}` until `status` is `succeeded`, `failed`, or `cancelled`. On success, `result.id` is the immutable dataset version ID.
 3. Call `/tools/{name}` for deterministic analysis, or `/chat` and `/reports` for agent workflows.
@@ -169,6 +171,48 @@ Trusted tool operations run in time-limited subprocesses with sampled RSS monito
 ## Trusted plugins
 
 Server-installed packages may register an `agent_dataset.plugins` entry point. Its callable receives `ToolRegistry` and calls `registry.register(Tool(...))` with a Pydantic input schema and handler `(analysis, parsed_arguments) -> (data, artifacts)`. Use `analysis.dataset()`, `analysis.frame()`, `analysis.result()`, and `analysis.artifact()` to enforce ownership and conversation scope. Enable explicit entry point names through `DATA_AGENT_ENABLED_PLUGINS=["name"]`; nothing is loaded from uploaded files. Plugins are trusted server code, not tenant-provided code.
+
+## Docker Compose
+
+Use Docker Desktop with **Linux containers** and Docker Compose 2.24 or newer. The multi-stage Dockerfile installs locked production dependencies into a Linux `/app/.venv`; it never copies the Windows `.venv` or installs packages globally. The final image runs as a non-root user. Compose adds a persistent volume, health checks, resource limits, a read-only root filesystem, and localhost-only port publishing. The build follows the [uv Docker guidance](https://docs.astral.sh/uv/guides/integration/docker/) and [Compose service configuration](https://docs.docker.com/reference/compose-file/services/).
+
+1. Copy `.env.example` to `.env` if you do not already have one.
+2. Generate a token for **this API**, using the existing virtual environment:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+
+3. Set the following in `.env`, replacing the token with the generated value:
+
+   ```dotenv
+   DATA_AGENT_API_KEYS={"YOUR_GENERATED_TOKEN":"local"}
+   DATA_AGENT_PROVIDER=offline
+   ```
+
+4. Start the service:
+
+   ```powershell
+   docker compose up --build -d --wait
+   docker compose ps
+   curl.exe http://127.0.0.1:8000/health
+   ```
+
+The application must bind to `0.0.0.0` **inside** the container, so an API token is required even though the published host port is restricted to localhost. Send `Authorization: Bearer YOUR_GENERATED_TOKEN` for dataset, tool, report, and chat requests. No GPT/Claude key is needed in offline mode. To run the existing demo or connect local Hermes, set `DATA_AGENT_MCP_API_KEY` to that token in the client's environment. Hermes stays installed on the host and connects to the published API; it does not need to be installed in the container.
+
+Set `DATA_AGENT_PORT=8001` in `.env` if port 8000 is in use. The container always listens on port 8000; only the published host port changes. Update the demo/Hermes `DATA_AGENT_API_URL` accordingly.
+
+```powershell
+docker compose logs --follow api
+docker compose stop
+docker compose up -d --wait
+# Remove the container/network while keeping saved data:
+docker compose down
+```
+
+The named `dataset-data` volume stores SQLite metadata, original datasets, normalized files, and artifacts under `/data`. It is separate from the host's existing `.data` directory and survives container recreation. Do not add `--volumes` to `docker compose down` unless you intend to delete that data. Keep one API service instance per volume. The default memory budget is 3 GiB; raise it alongside worker limits for larger workloads.
+
+When LLM keys become available, set the provider/model/key in `.env` as described above and run `docker compose up -d --wait` to recreate the container with the new environment. A plain `docker compose restart` does not reload changed environment values. Keys are supplied at runtime and excluded from the image build context. For image releases, pin the Python/uv image references to tested digests through the Dockerfile build arguments.
 
 ## Tests
 

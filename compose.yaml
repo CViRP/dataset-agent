@@ -1,0 +1,45 @@
+name: agent-dataset
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agent-dataset:local
+    init: true
+    restart: unless-stopped
+    # Compose >= 2.24 supports optional env files. Shell variables can also supply keys.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_AGENT_DATA_DIR: /data
+      DATA_AGENT_PROVIDER: ${DATA_AGENT_PROVIDER:-offline}
+      DATA_AGENT_MODEL: ${DATA_AGENT_MODEL:-}
+      DATA_AGENT_API_KEYS: ${DATA_AGENT_API_KEYS:?Set DATA_AGENT_API_KEYS to a JSON token-to-project map in .env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "127.0.0.1:${DATA_AGENT_PORT:-8000}:8000"
+    volumes:
+      - dataset-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Two analysis workers default to 1 GiB each; allow headroom for the API.
+    mem_limit: 3g
+    cpus: 2.0
+    pids_limit: 256
+    stop_grace_period: 75s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  dataset-data:
