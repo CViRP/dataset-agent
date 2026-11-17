@@ -77,7 +77,7 @@ class Agent:
                 min(self.settings.tool_timeout_seconds, remaining()),
             )
             results[value["result_id"]] = value
-            if name == "transform_dataset":
+            if name in {"transform_dataset", "edit_dataset"}:
                 allowed.append(value["data"]["dataset"]["id"])
             event(
                 "tool_completed",

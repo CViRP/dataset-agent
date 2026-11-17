@@ -43,6 +43,9 @@ def test_mcp_stdio_handshake_tools_and_png(settings, sales):
                 await session.initialize()
                 tools = await session.list_tools()
                 assert "query_table" in {tool.name for tool in tools.tools}
+                assert {"edit_dataset", "export_dataset", "transform_dataset"} <= {
+                    tool.name for tool in tools.tools
+                }
                 listed = await session.call_tool("list_datasets", {})
                 assert not listed.isError
                 assert listed.structuredContent["datasets"][0]["id"] == sales["id"]

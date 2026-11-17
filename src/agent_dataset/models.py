@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Input(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
 class DatasetInput(Input):
@@ -29,14 +29,75 @@ class QueryInput(Input):
     limit: int = Field(default=1000, ge=1, le=5000)
 
 
+Scalar = str | int | float | bool | None
+
+
+class FilterCondition(Input):
+    column: str
+    operator: Literal[
+        "eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "is_null", "not_null"
+    ]
+    value: Scalar | list[Scalar] = None
+
+
 class TransformStep(Input):
-    operation: Literal["select", "rename", "drop_duplicates", "drop_nulls", "fill_nulls", "cast"]
+    operation: Literal[
+        "select",
+        "rename",
+        "drop_duplicates",
+        "drop_nulls",
+        "fill_nulls",
+        "cast",
+        "drop_columns",
+        "filter",
+        "sort",
+        "replace",
+        "strip",
+        "add_column",
+        "calculate",
+    ]
     columns: list[str] = Field(default_factory=list)
     mapping: dict[str, Any] = Field(default_factory=dict)
+    conditions: list[FilterCondition] = Field(default_factory=list, max_length=20)
+    ascending: bool = True
+    column: str | None = None
+    source_column: str | None = None
+    operator: Literal["add", "subtract", "multiply", "divide"] = "add"
+    operand_column: str | None = None
+    value: Scalar = None
 
 
 class TransformInput(DatasetInput):
     steps: list[TransformStep] = Field(min_length=1, max_length=20)
+
+
+class CellEdit(Input):
+    row_index: int = Field(ge=0, description="Zero-based row position in this dataset version")
+    column: str
+    value: Scalar
+
+
+class EditInput(DatasetInput):
+    cells: list[CellEdit] = Field(default_factory=list, max_length=1000)
+    delete_rows: list[int] = Field(default_factory=list, max_length=1000)
+    append_rows: list[dict[str, Scalar]] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def has_edits(self):
+        if not (self.cells or self.delete_rows or self.append_rows):
+            raise ValueError("Supply cells, delete_rows or append_rows")
+        if any(index < 0 for index in self.delete_rows):
+            raise ValueError("Row positions must be nonnegative")
+        locations = [(cell.row_index, cell.column) for cell in self.cells]
+        if len(locations) != len(set(locations)):
+            raise ValueError("Each cell may only be edited once per request")
+        if any(cell.row_index in self.delete_rows for cell in self.cells):
+            raise ValueError("Cannot edit and delete the same row")
+        return self
+
+
+class ExportInput(DatasetInput):
+    format: Literal["csv", "json", "xlsx", "parquet"] = "csv"
 
 
 class StatisticsInput(DatasetInput):

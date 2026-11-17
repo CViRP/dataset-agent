@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
@@ -67,13 +68,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def request_limits(request, call_next):
-        # This API has no browser UI. Reject browser-originated requests, including simple forms.
-        if request.headers.get("origin"):
+        # Keep the browser surface opt-in, including simple cross-origin form submissions.
+        origin = request.headers.get("origin")
+        if origin and origin not in settings.browser_origins:
             return JSONResponse(
                 {
                     "error": {
                         "code": "origin_not_allowed",
-                        "message": "Browser origins are disabled",
+                        "message": "Browser origin is not in DATA_AGENT_BROWSER_ORIGINS",
                     }
                 },
                 status_code=403,
@@ -307,4 +309,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    # Add last so preflight handling and CORS headers wrap the request/auth middleware.
+    if settings.browser_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.browser_origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type"],
+            expose_headers=["Content-Disposition"],
+        )
     return app

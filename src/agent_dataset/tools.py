@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from . import models as m
 from .config import ServiceError, Settings
-from .ingest import public_dataset, save_table
+from .ingest import public_dataset
 from .store import Store, clean
 
 
@@ -337,6 +337,8 @@ def safe_csv(frame) -> bytes:
 
 
 def transform(a: Analysis, args: m.TransformInput):
+    from .editing import save_child, transform_step
+
     frame = a.frame(args.dataset_id)
     for step in args.steps:
         columns_exist(frame, step.columns)
@@ -362,18 +364,16 @@ def transform(a: Analysis, args: m.TransformInput):
             if any(dtype not in supported for dtype in step.mapping.values()):
                 raise ServiceError("invalid_dtype", f"Supported cast types: {sorted(supported)}")
             frame = frame.astype(step.mapping)
-    parent = a.dataset(args.dataset_id)
-    child = save_table(
-        a.store,
-        a.settings,
-        a.tenant,
-        frame,
-        parent["name"],
-        parent["source"],
-        parent_id=parent["id"],
-        steps=[step.model_dump() for step in args.steps],
-    )
-    return {"dataset": public_dataset(child)}, []
+        else:
+            try:
+                frame = transform_step(frame.copy(), step)
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise ServiceError(
+                    "invalid_transform", "Values are incompatible with this operation"
+                ) from exc
+        if len(frame.columns) != len(set(frame.columns)):
+            raise ServiceError("duplicate_columns", "Column names must be unique")
+    return save_child(a, args.dataset_id, frame, [step.model_dump() for step in args.steps])
 
 
 def statistics(a: Analysis, args: m.StatisticsInput):
@@ -636,6 +636,7 @@ def chart(a: Analysis, args: m.ChartInput):
 
 
 def build_registry(enabled_plugins: list[str] | None = None) -> ToolRegistry:
+    from .editing import edit, export
     from .reports import build_report
 
     registry = ToolRegistry()
@@ -663,9 +664,30 @@ def build_registry(enabled_plugins: list[str] | None = None) -> ToolRegistry:
         ),
         (
             "transform_dataset",
-            "Create a new immutable version using explicit transformations.",
+            (
+                "Create a new immutable version: select/rename/drop columns, cleanup, filter (AND), "
+                "sort, replace literal strings, strip, add_column or numeric calculate. "
+                "calculate uses source_column, operator and value or operand_column; column is the new name."
+            ),
             m.TransformInput,
             transform,
+            "write_derived",
+        ),
+        (
+            "edit_dataset",
+            (
+                "Create a version by editing cells, deleting rows, or appending records. "
+                "Row positions are zero-based in the input version; edits precede deletion and append."
+            ),
+            m.EditInput,
+            edit,
+            "write_derived",
+        ),
+        (
+            "export_dataset",
+            "Export an entire table version as CSV, JSON, XLSX or Parquet; returns a download artifact.",
+            m.ExportInput,
+            export,
             "write_derived",
         ),
         (

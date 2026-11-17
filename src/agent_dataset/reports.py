@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import platform
+import re
 import zipfile
 from html import escape
 from importlib.metadata import version
@@ -10,22 +11,22 @@ from .config import ServiceError
 from .models import BuildReportInput
 from .store import dumps
 
-HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+HTML = """<!doctype html><html lang="{{ language }}" dir="{{ direction }}"><head><meta charset="utf-8">
 <title>{{ title }}</title><style>
 body{font-family:system-ui,sans-serif;max-width:960px;margin:48px auto;padding:0 24px;color:#17212b}
 h1,h2{line-height:1.2}p{line-height:1.6}figure{margin:28px 0}img{max-width:100%}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;padding:16px;font-size:12px}
+pre{direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;padding:16px;font-size:12px}
 small{color:#58636e}.warning{border-left:3px solid #bb8420;padding-left:14px}
 </style></head><body><h1>{{ title }}</h1><p>{{ question }}</p>
-<h2>Findings</h2>{% for finding in findings %}<p>{{ finding.text }}</p>
-<small>Evidence: {{ finding.result_ids|join(', ') }}</small>{% else %}
-<p>This report presents computed evidence. No model interpretation was requested.</p>{% endfor %}
-<h2>Charts</h2>{% for chart in charts %}<figure><img src="data:image/png;base64,{{ chart.base64 }}"
+<h2>{{ labels.findings }}</h2>{% for finding in findings %}<p>{{ finding.text }}</p>
+<small>{{ labels.evidence }}: {{ finding.result_ids|join(', ') }}</small>{% else %}
+<p>{{ labels.summary }}</p>{% endfor %}
+<h2>{{ labels.charts }}</h2>{% for chart in charts %}<figure><img src="data:image/png;base64,{{ chart.base64 }}"
 alt="{{ chart.alt_text }}"><figcaption>{{ chart.alt_text }}</figcaption></figure>{% endfor %}
-<h2>Evidence and methods</h2>{% for result in results %}<h3>{{ result.tool }}</h3>
+<h2>{{ labels.methods }}</h2>{% for result in results %}<h3>{{ result.tool }}</h3>
 <small>{{ result.id }}</small><pre>{{ result.data }}</pre><p>{{ result.method }}</p>{% endfor %}
-<h2>Limitations</h2>{% for warning in warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
-<h2>Reproducibility</h2><pre>{{ provenance }}</pre>
+<h2>{{ labels.limitations }}</h2>{% for warning in warnings %}<p class="warning">{{ warning }}</p>{% endfor %}
+<h2>{{ labels.reproducibility }}</h2><pre>{{ provenance }}</pre>
 </body></html>"""
 
 
@@ -135,7 +136,21 @@ def build_report(a, args: BuildReportInput):
             )
         },
     }
+    persian = bool(re.search(r"[\u0600-\u06ff]", args.title + args.question))
     context = {
+        "language": "fa" if persian else "en",
+        "direction": "rtl" if persian else "ltr",
+        "labels": {
+            "findings": "یافته‌ها" if persian else "Findings",
+            "evidence": "شواهد" if persian else "Evidence",
+            "summary": "این گزارش شواهد محاسبه‌شده را ارائه می‌کند. تفسیر مدل درخواست نشده است."
+            if persian
+            else "This report presents computed evidence. No model interpretation was requested.",
+            "charts": "نمودارها" if persian else "Charts",
+            "methods": "شواهد و روش‌ها" if persian else "Evidence and methods",
+            "limitations": "محدودیت‌ها" if persian else "Limitations",
+            "reproducibility": "بازتولیدپذیری" if persian else "Reproducibility",
+        },
         "title": args.title,
         "question": args.question,
         "findings": [finding.model_dump() for finding in args.findings],

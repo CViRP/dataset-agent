@@ -20,6 +20,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key"),
     )
     api_keys: dict[str, str] = Field(default_factory=dict)
+    browser_origins: list[str] = Field(default_factory=list)
     max_upload_mb: int = Field(default=25, ge=1, le=500)
     max_rows: int = Field(default=500_000, ge=1)
     max_columns: int = Field(default=500, ge=1)
