@@ -98,6 +98,7 @@ class OpenAIProvider:
             instructions=SYSTEM,
             input=self.history,
             tools=self.tools,
+            tool_choice="required",
             max_output_tokens=4096,
             store=False,
             timeout=timeout,
@@ -157,6 +158,7 @@ class ClaudeProvider:
             system=SYSTEM,
             messages=self.history,
             tools=self.tools,
+            tool_choice={"type": "any"},
             max_tokens=4096,
             timeout=timeout,
         )

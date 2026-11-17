@@ -115,6 +115,7 @@ class Agent:
                 self.settings, provider_name, model, self.registry.definitions(), messages
             )
             answer = None
+            unstructured_responses = 0
             try:
                 for _ in range(self.settings.max_agent_steps):
                     remaining()
@@ -135,9 +136,26 @@ class Agent:
                             502,
                         )
                     if not step.calls:
+                        unstructured_responses += 1
+                        if unstructured_responses <= 2:
+                            provider.history.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Your previous response contained no function call. "
+                                        "Call a registered tool to gather evidence, or call "
+                                        "submit_answer alone with the structured answer. "
+                                        "Analytical answers must cite successful results from "
+                                        "this run. Do not return plain text or invent evidence."
+                                    ),
+                                }
+                            )
+                            event("model_retry", {"reason": "missing_tool_call"})
+                            continue
                         raise ServiceError(
                             "invalid_model_response",
-                            "Model did not return a structured answer or tool call.",
+                            "Model repeatedly returned no function call. Select a model "
+                            "that follows required tool calling, or retry the request.",
                             502,
                         )
                     if len(step.calls) > 8:

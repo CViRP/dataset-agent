@@ -70,6 +70,8 @@ def test_openai_wire_format(monkeypatch, settings):
     assert provider.history[-1]["type"] == "function_call_output"
     assert provider.history[-1]["call_id"] == "call_1"
     assert received[0]["store"] is False
+    assert received[0]["tool_choice"] == "required"
+    assert received[0]["tool_choice"] == "required"
     assert all(tool["type"] == "function" for tool in received[0]["tools"])
 
 
@@ -101,6 +103,8 @@ def test_claude_wire_format(monkeypatch, settings):
     assert provider.history[-1]["content"][0]["tool_use_id"] == "toolu_1"
     assert provider.history[-1]["content"][0]["is_error"] is True
     assert "input_schema" in received[0]["tools"][0]
+    assert received[0]["tool_choice"] == {"type": "any"}
+    assert received[0]["tool_choice"] == {"type": "any"}
 
 
 class DirectExecutor:
@@ -216,3 +220,60 @@ def test_agent_step_budget(store, settings, sales):
             lambda *_: None,
         )
     assert exc.value.code == "step_limit"
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_agent_recovers_unstructured_response(store, settings, sales, recover):
+    class TextProvider:
+        def __init__(self):
+            self.history, self.count, self.closed = [], 0, False
+
+        def step(self, timeout):
+            self.count += 1
+            if self.count == 1 or not recover:
+                return Step([], "Unverified claim: revenue is 999.", {}, "completed")
+            assert "no function call" in self.history[-1]["content"]
+            return Step(
+                [
+                    Call(
+                        "final",
+                        "submit_answer",
+                        {"kind": "clarification", "answer": "Which revenue measure should I use?"},
+                    )
+                ],
+                "",
+                {},
+                "completed",
+            )
+
+        def close(self):
+            self.closed = True
+
+    provider = TextProvider()
+    conversation = store.put("conversation", "local", {"dataset_ids": [sales["id"]], "turns": []})
+    agent = Agent(store, settings, DirectExecutor(store, settings), lambda *_: provider)
+    events = []
+
+    def run():
+        return agent.run(
+            "local",
+            ChatInput(prompt="Analyze", dataset_ids=[sales["id"]], provider="openai", model="test"),
+            "test-run",
+            conversation["id"],
+            threading.Event(),
+            lambda name, data: events.append(name),
+        )
+
+    if recover:
+        output = run()
+        assert output["kind"] == "clarification"
+        assert "999" not in output["answer"]
+        assert provider.count == 2
+    else:
+        with pytest.raises(ServiceError) as exc:
+            run()
+        assert exc.value.code == "invalid_model_response"
+        assert provider.count == 3
+        assert store.get("conversation", "local", conversation["id"])["turns"] == []
+    assert provider.closed
+    assert events.count("model_retry") == (1 if recover else 2)
