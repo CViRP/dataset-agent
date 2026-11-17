@@ -2,6 +2,36 @@
 
 A data-science assistant built with FastAPI and a Persian Flutter web frontend. Upload tables or documents, edit and transform datasets, ask GPT or Claude questions, and download datasets, charts, and reports. `/docs` and `/redoc` are disabled; the machine-readable OpenAPI specification is at `/openapi.json`.
 
+## Quick start from GitHub
+
+Prerequisites: Git, [uv](https://docs.astral.sh/uv/getting-started/installation/), and Python 3.14 (uv can install Python automatically). For the optional browser interface, also install the [Flutter SDK](https://docs.flutter.dev/install) and Chrome. The commands below use PowerShell on Windows.
+
+```powershell
+git clone https://github.com/CViRP/dataset-agent.git
+Set-Location dataset-agent
+uv sync --locked --python 3.14
+Copy-Item .env.example .env
+uv run --locked agent-dataset
+```
+
+Keep that terminal running. The API is available at `http://127.0.0.1:8000`; check `http://127.0.0.1:8000/health`. In a second terminal, open the cloned repository and run a complete offline example:
+
+```powershell
+uv run --locked python examples/api_demo.py
+```
+
+To use the browser interface instead, run these commands from the repository root in a second terminal:
+
+```powershell
+Set-Location frontend
+flutter pub get
+flutter run -d chrome --web-hostname localhost --web-port 8080
+```
+
+The example `.env` already allows this frontend origin. Open `http://localhost:8080`, upload `examples/sales.csv` from the repository, select the dataset, and inspect or edit its cells. Use the transformation controls to clean/filter data, download an exported version, or generate a report. Every edit creates a new version, so earlier versions remain available. Local defaults require no project token; if you configure authentication, enter the project token in connection settings.
+
+The default provider is `offline`: direct tools, edits, charts, and reports work without a model key, while chat returns profiles and document keyword matches. For natural-language analysis or editing, configure OpenAI or Anthropic as described in [Enable GPT or Claude later](#enable-gpt-or-claude-later), then restart the API. Stop either process with `Ctrl+C`.
+
 ## Persian Flutter web frontend
 
 The `frontend/` application provides a right-to-left workspace with a bundled Persian font, uploads, paginated previews, cell edits, row insertion/deletion, cleanup and transformation forms, version selection, chat, evidence citations, reports, and authenticated downloads. Every edit creates a new immutable version; select any earlier version in the dataset list to return to it.
@@ -16,7 +46,8 @@ $env:DATA_AGENT_BROWSER_ORIGINS='["http://localhost:8080","http://127.0.0.1:8080
 In a second terminal:
 
 ```powershell
-Set-Location E:\projects\agent_dataset\frontend
+# From the cloned repository root:
+Set-Location frontend
 flutter pub get
 flutter run -d chrome --web-hostname localhost --web-port 8080
 ```
@@ -37,11 +68,11 @@ The static bundle is `frontend/build/web/`. Serve it with an HTTP server, config
 
 ## Run locally
 
-Dependencies are installed into the existing `.venv`; `uv.lock` pins the tested environment. Python 3.14 is supported.
+Dependencies are installed into `.venv`; `uv.lock` pins the tested environment. Python 3.14 or newer is required; the quick start selects Python 3.14.
 
 ```powershell
-# From E:\projects\agent_dataset
-uv sync --locked --python .venv/Scripts/python.exe --cache-dir .uv-cache
+# From the cloned repository root:
+uv sync --locked --python 3.14
 # Optional configuration; skip this if .env already exists.
 Copy-Item .env.example .env
 .\.venv\Scripts\agent-dataset.exe
@@ -185,7 +216,7 @@ Start the Dataset API, then merge `examples/hermes-mcp.yaml` into your existing 
 
 The bridge uses the same API credentials, ownership checks, and worker limits. Set `DATA_AGENT_MCP_API_KEY` in its environment when server authentication is enabled. Restart Hermes or reload its MCP connections as described in the [Hermes MCP documentation](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp).
 
-This machine's Hermes launcher was found, but `hermes --version` reported: `no dependency environment is committed for this install; run hermes pm repair`. The project does not alter the existing Hermes installation/configuration. Repair it with `hermes pm repair` before attempting the Hermes-side connection. The bridge itself is tested through a real MCP stdio client, including chart image transfer.
+If your Hermes installation reports `no dependency environment is committed for this install`, repair it with `hermes pm repair` before attempting the Hermes-side connection. The bridge itself is tested through a real MCP stdio client, including chart image transfer.
 
 ## Configuration and operations
 
