@@ -15,6 +15,28 @@ class Payload(SimpleNamespace):
         return vars(self)
 
 
+def test_openai_endpoint_from_dotenv(tmp_path, monkeypatch):
+    import openai
+
+    from agent_dataset.config import Settings
+
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("DATA_AGENT_OPENAI_BASE_URL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENAI_BASE_URL=https://openrouter.ai/api/v1\n", encoding="utf-8")
+    configured = Settings(_env_file=env_file, openai_api_key="test-key")
+    received = {}
+
+    def client(**kwargs):
+        received.update(kwargs)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(openai, "OpenAI", client)
+    provider = OpenAIProvider(configured, "test-model", [], [])
+    assert received["base_url"] == "https://openrouter.ai/api/v1"
+    provider.close()
+
+
 def test_openai_wire_format(monkeypatch, settings):
     import openai
 

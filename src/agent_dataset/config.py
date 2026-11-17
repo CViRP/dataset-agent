@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     data_dir: Path = Path(".data")
     provider: Literal["offline", "openai", "anthropic"] = "offline"
     model: str = ""
+    openai_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OPENAI_BASE_URL", "DATA_AGENT_OPENAI_BASE_URL", "openai_base_url"
+        ),
+    )
     openai_api_key: SecretStr = Field(
         default=SecretStr(""), validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key")
     )

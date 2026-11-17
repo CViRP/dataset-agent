@@ -210,6 +210,10 @@ The provider/model can also be selected per request; keys stay on the server. A 
 
 Both adapters are covered by simulated tool-call tests. Real model calls have not been tested without API credentials. Citation validation checks reference integrity; it cannot guarantee every sentence is scientifically correct. Inspect saved evidence and methods for consequential analyses.
 
+### OpenRouter and compatible endpoints
+
+For OpenRouter, keep `DATA_AGENT_PROVIDER=openai`, put your OpenRouter key in `OPENAI_API_KEY`, and set `OPENAI_BASE_URL=https://openrouter.ai/api/v1` in `.env`. Set `DATA_AGENT_MODEL` to an available OpenRouter model ID that supports tool calling, then restart the API. The adapter uses the Responses API; other compatible endpoints must support `/responses` and function tools. Without a custom base URL, the SDK uses its default OpenAI endpoint. An OpenRouter key cannot authenticate against OpenAI's endpoint. See the [OpenRouter API documentation](https://openrouter.ai/docs/api/api-reference/responses/create-responses).
+
 ## Hermes integration
 
 Start the Dataset API, then merge `examples/hermes-mcp.yaml` into your existing `~/.hermes/config.yaml`. The example uses this project's `.venv` Python to run a stdio MCP bridge. Adjust the absolute path if you move the repository. It exposes all analysis tools plus dataset listing, saved-result retrieval, and PNG image retrieval. Hermes supplies the reasoning model; it does not require a second GPT/Claude configuration in this server.

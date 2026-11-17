@@ -75,7 +75,11 @@ class OpenAIProvider:
     ):
         from openai import OpenAI
 
-        self.client = OpenAI(api_key=settings.openai_api_key.get_secret_value(), max_retries=0)
+        self.client = OpenAI(
+            api_key=settings.openai_api_key.get_secret_value(),
+            base_url=settings.openai_base_url or None,
+            max_retries=0,
+        )
         self.model, self.history = model, list(messages)
         self.tools = [
             {
