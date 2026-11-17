@@ -1,21 +1,28 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'api.dart';
 import 'download.dart';
+import 'theme.dart';
+import 'widgets/chat_panel.dart';
+import 'widgets/data_preview_panel.dart';
+import 'widgets/dialogs.dart';
+import 'widgets/empty_workspace.dart';
+import 'widgets/profile_panel.dart';
+import 'widgets/transform_panel.dart';
+import 'widgets/workspace_sidebar.dart';
 
-const ink = Color(0xFF173C38),
-    accent = Color(0xFF087F72),
-    muted = Color(0xFF65756F),
-    paper = Color(0xFFF4F6F3);
 void main() => runApp(const DatasetApp());
 
 class DatasetApp extends StatelessWidget {
   final DatasetApi? api;
   const DatasetApp({super.key, this.api});
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'داده‌یار | دستیار داده',
@@ -23,31 +30,7 @@ class DatasetApp extends StatelessWidget {
     locale: const Locale('fa'),
     supportedLocales: const [Locale('fa')],
     localizationsDelegates: GlobalMaterialLocalizations.delegates,
-    theme: ThemeData(
-      useMaterial3: true,
-      fontFamily: 'Vazirmatn',
-      colorScheme: ColorScheme.fromSeed(seedColor: accent)
-          .copyWith(surface: Colors.white),
-      scaffoldBackgroundColor: paper,
-      textTheme: const TextTheme(
-        bodyMedium: TextStyle(height: 1.65, color: ink),
-        bodyLarge: TextStyle(height: 1.65, color: ink),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-        isDense: true,
-        filled: true,
-        fillColor: Colors.white,
-      ),
-      cardTheme: CardThemeData(
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: const BorderSide(color: Color(0xFFDDE5DF)),
-        ),
-      ),
-    ),
+    theme: buildAppTheme(),
     home: Workspace(api: api),
   );
 }
@@ -55,28 +38,33 @@ class DatasetApp extends StatelessWidget {
 class Workspace extends StatefulWidget {
   final DatasetApi? api;
   const Workspace({super.key, this.api});
+
   @override
   State<Workspace> createState() => _WorkspaceState();
 }
 
 class _WorkspaceState extends State<Workspace> {
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   late DatasetApi api;
+
   List<Json> datasets = [], rows = [], messages = [], artifacts = [];
   List<String> scope = [];
+  final Map<String, Json> _profilesByDataset = {};
+
   Json? selected, capabilities;
-  String? conversation, activeJob, error, column;
+  String? conversation, activeJob, error, transformColumn;
   String status = '',
       provider = 'offline',
-      operation = 'drop_duplicates',
-      filterOperator = 'eq';
-  bool busy = false, connected = false, ascending = true;
+      reportFormat = 'html',
+      transformOperation = 'drop_duplicates';
+  bool busy = false, connected = false;
   int tab = 0, offset = 0;
-  final prompt = TextEditingController(),
-      model = TextEditingController(),
-      value = TextEditingController(),
-      target = TextEditingController();
+
+  final prompt = TextEditingController(), model = TextEditingController();
   final tableScroll = ScrollController();
+
   static const pageSize = 20;
+
   @override
   void initState() {
     super.initState();
@@ -96,8 +84,6 @@ class _WorkspaceState extends State<Workspace> {
     api.close();
     prompt.dispose();
     model.dispose();
-    value.dispose();
-    target.dispose();
     tableScroll.dispose();
     super.dispose();
   }
@@ -159,7 +145,10 @@ class _WorkspaceState extends State<Workspace> {
         selected = dataset;
         offset = 0;
         rows = [];
-        column = null;
+        transformColumn = null;
+        if (dataset['kind'] != 'table' && tab == 2) {
+          tab = 0;
+        }
       });
     }
     await preview();
@@ -211,7 +200,7 @@ class _WorkspaceState extends State<Workspace> {
     final picked = await FilePicker.platform.pickFiles(
       withData: true,
       type: FileType.custom,
-      allowedExtensions: [
+      allowedExtensions: const [
         'csv',
         'tsv',
         'xlsx',
@@ -236,9 +225,11 @@ class _WorkspaceState extends State<Workspace> {
     await select(dataset);
   }
 
-  List<String> get columns => ((selected?['columns'] ?? []) as List)
-      .map((e) => (e as Map)['name'] as String)
-      .toList();
+  List<Map<String, dynamic>> get columnSpecs =>
+      ((selected?['columns'] ?? []) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+
   Future<void> mutate(String tool, Json arguments) async {
     final result = await api.tool(tool, {
       'dataset_id': selected!['id'],
@@ -247,176 +238,114 @@ class _WorkspaceState extends State<Workspace> {
     await refresh();
     await select(Map<String, dynamic>.from(result['data']['dataset'] as Map));
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'نسخهٔ جدید ذخیره شد. نسخهٔ قبلی در فهرست داده‌ها در دسترس است.',
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          const SnackBar(
+            duration: Duration(seconds: 2),
+            showCloseIcon: true,
+            closeIconColor: AppColors.yellow,
+            content: Text(
+              'نسخهٔ جدید ذخیره شد. نسخهٔ قبلی در فهرست داده‌ها در دسترس است.',
+            ),
           ),
-        ),
-      );
+        );
     }
-  }
-
-  Future<String?> inputDialog(String title, String initial, String help) async {
-    final controller = TextEditingController(text: initial);
-    String? validation;
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, update) => AlertDialog(
-          title: Text(title),
-          content: SizedBox(
-            width: 430,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(help),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: controller,
-                  maxLines: 5,
-                  textDirection: TextDirection.ltr,
-                  decoration: InputDecoration(errorText: validation),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('انصراف'),
-            ),
-            FilledButton(
-              onPressed: () {
-                try {
-                  jsonDecode(controller.text);
-                  Navigator.pop(ctx, controller.text);
-                } catch (_) {
-                  update(() => validation = 'مقدار JSON معتبر وارد کنید.');
-                }
-              },
-              child: const Text('ذخیرهٔ نسخهٔ جدید'),
-            ),
-          ],
-        ),
-      ),
-    );
-    Future<void>.delayed(const Duration(seconds: 1), controller.dispose);
-    return result;
   }
 
   Future<void> editCell(int index, String col, dynamic old) async {
-    final text = await inputDialog(
-      'ویرایش $col · ردیف ${offset + index}',
-      jsonEncode(old),
-      'مقدار JSON وارد کنید؛ متن در گیومه. مثال: "تهران"، 42، true یا null.',
+    if (busy) return;
+    final dtype = columnSpecs
+        .where((c) => c['name'] == col)
+        .firstOrNull?['dtype']
+        ?.toString();
+    final text = await showCellEditDialog(
+      context,
+      columnName: col,
+      rowIndex: offset + index,
+      currentValue: old,
+      dtype: dtype,
     );
     if (text == null) return;
-    final parsed = jsonDecode(text);
-    if (parsed is Map || parsed is List) {
-      throw ApiException('مقدار سلول باید متن، عدد، بولی یا null باشد.');
-    }
-    await mutate('edit_dataset', {
-      'cells': [
-        {'row_index': offset + index, 'column': col, 'value': parsed},
-      ],
+    await guard(() async {
+      final parsed = jsonDecode(text);
+      if (parsed is Map || parsed is List) {
+        throw ApiException('مقدار سلول باید متن، عدد، بولی یا null باشد.');
+      }
+      await mutate('edit_dataset', {
+        'cells': [
+          {'row_index': offset + index, 'column': col, 'value': parsed},
+        ],
+      });
     });
   }
 
   Future<void> appendRow() async {
-    final text = await inputDialog(
-      'افزودن ردیف',
-      const JsonEncoder.withIndent('  ')
-          .convert({for (final c in columns) c: null}),
-      'مقادیر ردیف را به صورت یک شیء JSON وارد کنید.',
-    );
-    if (text == null) return;
-    final row = jsonDecode(text);
-    if (row is! Map) throw ApiException('یک شیء JSON وارد کنید.');
-    await mutate('edit_dataset', {
-      'append_rows': [row],
+    if (busy) return;
+    final row = await showAppendRowDialog(context, columns: columnSpecs);
+    if (row == null) return;
+    await guard(() async {
+      await mutate('edit_dataset', {
+        'append_rows': [row],
+      });
     });
   }
 
   Future<void> deleteRow(int index) async {
-    final yes = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('حذف ردیف در نسخهٔ جدید'),
-        content: Text('ردیف ${offset + index} از نسخهٔ جدید حذف شود؟'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('انصراف'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('حذف ردیف'),
-          ),
-        ],
-      ),
+    if (busy) return;
+    final yes = await showDeleteRowDialog(
+      context,
+      rowIndex: offset + index,
+      rowPreview: rows[index],
     );
-    if (yes == true) {
+    if (!yes) return;
+    await guard(() async {
       await mutate('edit_dataset', {
         'delete_rows': [offset + index],
+      });
+    });
+  }
+
+  Future<void> runProfile() async {
+    final id = selected!['id'] as String;
+    final result = await api.tool('profile_dataset', {'dataset_id': id});
+    if (mounted) {
+      setState(() {
+        _profilesByDataset[id] = Map<String, dynamic>.from(
+          result['data'] as Map,
+        );
       });
     }
   }
 
-  dynamic scalar(String text) {
-    try {
-      return jsonDecode(text);
-    } catch (_) {
-      return text;
-    }
+  Future<Json> searchDocument(String query, int topK) async {
+    final id = selected!['id'] as String;
+    late Json resultData;
+    await guard(() async {
+      final res = await api.tool('search_documents', {
+        'dataset_ids': [id],
+        'query': query,
+        'top_k': topK,
+      });
+      resultData = Map<String, dynamic>.from(res['data'] as Map);
+    });
+    return resultData;
   }
 
-  Future<void> transform() async {
-    final step = <String, dynamic>{'operation': operation};
-    if (!['drop_duplicates', 'drop_nulls'].contains(operation) &&
-        column == null) {
-      throw ApiException('ابتدا یک ستون انتخاب کنید.');
-    }
-    switch (operation) {
-      case 'drop_duplicates':
-      case 'drop_nulls':
-      case 'strip':
-      case 'drop_columns':
-        step['columns'] = column == null ? <String>[] : [column];
-      case 'sort':
-        step.addAll({
-          'columns': [column],
-          'ascending': ascending,
-        });
-      case 'rename':
-        if (target.text.trim().isEmpty) {
-          throw ApiException('نام جدید ستون را وارد کنید.');
-        }
-        step['mapping'] = {column!: target.text.trim()};
-      case 'cast':
-        step['mapping'] = {column!: target.text.trim()};
-      case 'fill_nulls':
-        step['mapping'] = {column!: scalar(value.text)};
-      case 'filter':
-        step['conditions'] = [
-          {
-            'column': column,
-            'operator': filterOperator,
-            'value': scalar(value.text),
-          },
-        ];
-      case 'calculate':
-        step.addAll({
-          'column': target.text.trim(),
-          'source_column': column,
-          'operator': 'multiply',
-          'value': scalar(value.text),
-        });
-    }
-    await mutate('transform_dataset', {
-      'steps': [step],
+  Future<List<Json>> readNeighbors(String chunkId) async {
+    final id = selected!['id'] as String;
+    var chunks = <Json>[];
+    await guard(() async {
+      final res = await api.tool('read_document', {
+        'dataset_id': id,
+        'chunk_id': chunkId,
+        'neighbors': 1,
+      });
+      chunks = ((res['data']?['chunks'] ?? []) as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
     });
+    return chunks;
   }
 
   Future<void> downloadArtifact(Json a) async {
@@ -428,6 +357,15 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> export(String format) async {
+    if (format == 'original') {
+      final id = selected!['id'] as String;
+      final name =
+          selected!['source']?['filename']?.toString() ??
+          selected!['name'] as String;
+      final bytes = await api.download('/datasets/$id/download?original=true');
+      saveDownload(bytes, name, 'application/octet-stream');
+      return;
+    }
     final result = await api.tool('export_dataset', {
       'dataset_id': selected!['id'],
       'format': format,
@@ -454,7 +392,7 @@ class _WorkspaceState extends State<Workspace> {
         if (model.text.trim().isNotEmpty && provider != 'offline')
           'model': model.text.trim(),
         if (conversation != null) 'conversation_id': conversation,
-        if (report) 'format': 'html',
+        if (report) 'format': reportFormat,
         if (report) 'title': 'گزارش تحلیل داده',
       },
     );
@@ -484,63 +422,31 @@ class _WorkspaceState extends State<Workspace> {
     }
   }
 
-  Future<void> settings() async {
-    final url = TextEditingController(text: api.baseUrl),
-        token = TextEditingController(text: api.token);
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('اتصال به سرور'),
-        content: SizedBox(
-          width: 440,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: url,
-                textDirection: TextDirection.ltr,
-                decoration: const InputDecoration(labelText: 'آدرس API'),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: token,
-                obscureText: true,
-                textDirection: TextDirection.ltr,
-                decoration: const InputDecoration(
-                  labelText: 'توکن پروژه (اختیاری در حالت محلی)',
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'توکن فقط در حافظهٔ این صفحه نگه‌داری می‌شود. کلید مدل را در سرور تنظیم کنید.',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('انصراف'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('اتصال'),
-          ),
-        ],
-      ),
+  Future<void> inspectCitation(String resultId) async {
+    if (busy) return;
+    Json? result;
+    await guard(() async {
+      result = await api.request('/results/$resultId');
+    });
+    if (!mounted || result == null) return;
+    await showEvidenceDialog(
+      context,
+      resultId: resultId,
+      data: result!['data'],
     );
-    if (saved == true) {
-      final parsed = Uri.tryParse(url.text.trim());
-      if (parsed == null ||
-          !['http', 'https'].contains(parsed.scheme) ||
-          parsed.host.isEmpty ||
-          parsed.userInfo.isNotEmpty ||
-          parsed.hasQuery ||
-          parsed.hasFragment) {
-        throw ApiException('آدرس معتبر HTTP یا HTTPS وارد کنید.');
-      }
+  }
+
+  Future<void> openSettings() async {
+    if (busy) return;
+    final next = await showConnectionSettingsDialog(
+      context,
+      currentUrl: api.baseUrl,
+      currentToken: api.token,
+    );
+    if (next == null) return;
+    await guard(() async {
       api.close();
-      api = DatasetApi(baseUrl: url.text.trim(), token: token.text.trim());
+      api = DatasetApi(baseUrl: next.baseUrl, token: next.token);
       if (mounted) {
         setState(() {
           selected = null;
@@ -548,849 +454,876 @@ class _WorkspaceState extends State<Workspace> {
           datasets = [];
           messages = [];
           artifacts = [];
+          _profilesByDataset.clear();
           conversation = null;
           scope = [];
         });
       }
       await connect();
-    }
-    Future<void>.delayed(const Duration(seconds: 1), () {
-      url.dispose();
-      token.dispose();
     });
   }
 
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      backgroundColor: paper,
-      toolbarHeight: 82,
-      titleSpacing: 24,
-      title: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: ink,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(Icons.dataset_outlined, color: Colors.white),
-          ),
-          const SizedBox(width: 12),
-          const Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'داده‌یار',
-                style: TextStyle(
-                  fontSize: 23,
-                  fontWeight: FontWeight.w800,
-                  color: ink,
-                ),
-              ),
-              Text(
-                'فضای کار هوشمند داده',
-                style: TextStyle(fontSize: 12, color: muted),
-              ),
-            ],
-          ),
-        ],
-      ),
-      actions: [
-        if (MediaQuery.sizeOf(context).width > 600)
-          Chip(
-            avatar: Icon(
-              Icons.circle,
-              size: 9,
-              color: connected ? accent : muted,
-            ),
-            label: Text(connected ? 'متصل به سرور' : 'بدون اتصال'),
-          ),
-        IconButton(
-          tooltip: 'تنظیم اتصال',
-          onPressed: busy ? null : () => guard(settings),
-          icon: const Icon(Icons.tune),
-        ),
-        const SizedBox(width: 20),
-      ],
-    ),
-    body: Column(
-      children: [
-        if (busy) const LinearProgressIndicator(minHeight: 2),
-        if (error != null)
-          Container(
-            width: double.infinity,
-            color: const Color(0xFFFFECE8),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
-            child: Row(
-              children: [
-                const Icon(Icons.error_outline, color: Colors.deepOrange),
-                const SizedBox(width: 10),
-                Expanded(child: SelectableText(error!)),
-                IconButton(
-                  tooltip: 'بستن پیام',
-                  onPressed: () => setState(() => error = null),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-          ),
-        if (busy)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-            child: Row(
-              children: [
-                Expanded(child: Text(status)),
-                if (activeJob != null)
-                  TextButton(
-                    onPressed: () async {
-                      try {
-                        await api.request('/jobs/$activeJob/cancel', body: {});
-                      } catch (e) {
-                        if (mounted) setState(() => error = '$e');
-                      }
-                    },
-                    child: const Text('لغو کار'),
-                  ),
-              ],
-            ),
-          ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, c) => c.maxWidth < 850
-                ? Column(
-                    children: [
-                      SizedBox(height: 180, child: library(compact: true)),
-                      Expanded(child: content()),
-                    ],
-                  )
-                : Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      SizedBox(width: 270, child: library()),
-                      const VerticalDivider(width: 1),
-                      Expanded(child: content()),
-                    ],
-                  ),
-          ),
-        ),
-      ],
-    ),
-  );
-  Widget library({bool compact = false}) => Material(
-    color: Colors.white,
-    child: Padding(
-      padding: EdgeInsets.all(compact ? 12 : 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'مجموعه‌داده‌ها',
-                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
-                ),
-              ),
-              IconButton(
-                tooltip: 'به‌روزرسانی فهرست',
-                onPressed: busy || !connected ? null : () => guard(refresh),
-                icon: const Icon(Icons.refresh, size: 20),
-              ),
-            ],
-          ),
-          FilledButton.icon(
-            onPressed: busy || !connected ? null : () => guard(upload),
-            icon: const Icon(Icons.add, size: 19),
-            label: const Text('بارگذاری فایل'),
-          ),
-          if (!compact)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 15),
-              child: Text(
-                'CSV، Excel، JSON و اسناد متنی\nهر تغییر، یک نسخهٔ تازه.',
-                style: TextStyle(color: muted, fontSize: 12),
-              ),
-            ),
-          Expanded(
-            child: datasets.isEmpty
-                ? Center(
-                    child: Text(
-                      connected
-                          ? 'هنوز فایلی بارگذاری نشده.'
-                          : 'از تنظیمات به سرور متصل شوید.',
-                      style: const TextStyle(color: muted, fontSize: 12),
-                    ),
-                  )
-                : ListView.separated(
-                    scrollDirection: compact ? Axis.horizontal : Axis.vertical,
-                    itemCount: datasets.length,
-                    separatorBuilder: (_, _) =>
-                        const SizedBox(height: 6, width: 8),
-                    itemBuilder: (context, i) {
-                      final d = datasets[i];
-                      return SizedBox(
-                        width: compact ? 230 : null,
-                        child: ListTile(
-                          selected: selected?['id'] == d['id'],
-                          selectedTileColor: const Color(0xFFE6F2EC),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          leading: Icon(
-                            d['parent_id'] != null
-                                ? Icons.account_tree_outlined
-                                : d['kind'] == 'table'
-                                ? Icons.table_chart_outlined
-                                : Icons.description_outlined,
-                            color: accent,
-                            size: 21,
-                          ),
-                          title: Text(
-                            d['name'] as String,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                          subtitle: Text(
-                            '${d['parent_id'] != null ? 'نسخهٔ ویرایش‌شده' : 'نسخهٔ اصلی'} · ${d['kind'] == 'table' ? '${d['rows']} ردیف' : 'سند'}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          onTap: busy ? null : () => guard(() => select(d)),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    ),
-  );
-  Widget content() => LayoutBuilder(
-    builder: (context, constraints) {
-      if (selected != null && constraints.maxHeight < 560) {
-        return SingleChildScrollView(
-          child: SizedBox(height: 660, child: workspaceContent()),
-        );
-      }
-      return workspaceContent();
+  void _resetChat() {
+    setState(() {
+      conversation = null;
+      scope = [];
+      messages = [];
+      artifacts = [];
+    });
+  }
+
+  Widget _buildSidebar({bool inDrawer = false}) => WorkspaceSidebar(
+    datasets: datasets,
+    selected: selected,
+    busy: busy,
+    connected: connected,
+    inDrawer: inDrawer,
+    onRefresh: () => guard(refresh),
+    onUpload: () {
+      if (inDrawer) Navigator.pop(context);
+      guard(upload);
+    },
+    onOpenSettings: () {
+      if (inDrawer) Navigator.pop(context);
+      openSettings();
+    },
+    onSelect: (d) {
+      if (inDrawer) Navigator.pop(context);
+      guard(() => select(d));
     },
   );
-  Widget workspaceContent() {
-    if (selected == null) {
-      return SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 42),
-              const Text(
-                'از دادهٔ خام،\nبه دادهٔ آماده.',
-                style: TextStyle(
-                  fontSize: 38,
-                  height: 1.5,
-                  fontWeight: FontWeight.w800,
-                  color: ink,
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    final isWide = width >= 900;
+
+    return Scaffold(
+      key: _scaffoldKey,
+      drawer: isWide ? null : Drawer(width: 310, child: _buildSidebar(inDrawer: true)),
+      appBar: AppBar(
+        toolbarHeight: 74,
+        titleSpacing: isWide ? 24 : 12,
+        automaticallyImplyLeading: false,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 1, color: AppColors.creamBorder),
+        ),
+        title: Row(
+          children: [
+            if (!isWide) ...[
+              IconButton(
+                tooltip: 'فهرست مجموعه‌داده‌ها',
+                color: AppColors.ink,
+                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                icon: Badge(
+                  isLabelVisible: datasets.isNotEmpty,
+                  backgroundColor: AppColors.yellow,
+                  textColor: AppColors.ink,
+                  label: Text('${datasets.length}'),
+                  child: const Icon(Icons.menu_rounded),
                 ),
               ),
-              const SizedBox(height: 18),
-              const Text(
-                'فایل خود را بارگذاری کنید، داده‌ها را بررسی و ویرایش کنید\nو به زبان فارسی از عامل بخواهید آن‌ها را تحلیل کند.',
-                style: TextStyle(color: muted, fontSize: 16),
-              ),
-              const SizedBox(height: 30),
-              FilledButton.icon(
-                onPressed: busy || !connected ? null : () => guard(upload),
-                icon: const Icon(Icons.upload_file),
-                label: const Text('شروع با بارگذاری فایل'),
-              ),
-              const SizedBox(height: 48),
-              const Divider(),
-              const SizedBox(height: 20),
-              const Text(
-                'نسخه‌های قبلی همیشه در دسترس‌اند.',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              const Text(
-                'ویرایش سلول‌ها، پاک‌سازی، فیلتر و دریافت خروجی؛ در یک فضای کار ساده.',
-                style: TextStyle(color: muted),
-              ),
+              const SizedBox(width: 4),
             ],
-          ),
-        ),
-      );
-    }
-    final table = selected!['kind'] == 'table';
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 18, 24, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            spacing: 20,
-            runSpacing: 10,
-            children: [
-              Column(
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: AppColors.cobalt,
+                borderRadius: BorderRadius.circular(AppRadius.md),
+              ),
+              child: const Icon(
+                Icons.hub_rounded,
+                color: AppColors.yellow,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.md),
+            const Flexible(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    selected!['name'] as String,
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
+                    'داده‌یار',
+                    style: TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.ink,
                     ),
                   ),
                   Text(
-                    table
-                        ? '${selected!['rows']} ردیف  /  ${columns.length} ستون'
-                        : 'سند متنی',
-                    style: const TextStyle(color: muted),
+                    'استودیوی هوشمند تحلیل و آماده‌سازی داده',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.inkMuted,
+                    ),
                   ),
                 ],
               ),
-              if (table)
-                PopupMenuButton<String>(
-                  enabled: !busy,
-                  tooltip: 'دریافت خروجی',
-                  onSelected: (format) => guard(() => export(format)),
-                  itemBuilder: (_) => ['csv', 'json', 'xlsx', 'parquet']
-                      .map(
-                        (f) => PopupMenuItem(
-                          value: f,
-                          child: Text(f.toUpperCase()),
-                        ),
-                      )
-                      .toList(),
-                  child: const Chip(
-                    avatar: Icon(Icons.download, size: 18),
-                    label: Text('دریافت خروجی'),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SelectableText(
-            selected!['id'] as String,
-            textDirection: TextDirection.ltr,
-            style: const TextStyle(color: muted, fontSize: 11),
-          ),
-          const SizedBox(height: 18),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SegmentedButton<int>(
-              segments: const [
-                ButtonSegment(
-                  value: 0,
-                  icon: Icon(Icons.table_rows_outlined),
-                  label: Text('پیش‌نمایش و ویرایش'),
-                ),
-                ButtonSegment(
-                  value: 1,
-                  icon: Icon(Icons.auto_fix_high_outlined),
-                  label: Text('تبدیل داده'),
-                ),
-                ButtonSegment(
-                  value: 2,
-                  icon: Icon(Icons.chat_bubble_outline),
-                  label: Text('گفت‌وگو با عامل'),
-                ),
-              ],
-              selected: {tab},
-              onSelectionChanged: (v) => setState(() => tab = v.first),
             ),
+          ],
+        ),
+        actions: [
+          if (width > 620)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.cobaltDeep,
+                borderRadius: BorderRadius.circular(AppRadius.pill),
+                border: Border.all(color: AppColors.cobaltBorder),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    connected
+                        ? Icons.cloud_done_rounded
+                        : Icons.cloud_off_rounded,
+                    size: 16,
+                    color: connected ? AppColors.yellow : AppColors.creamMuted,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    connected ? 'متصل به سرور' : 'بدون اتصال',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.cream,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(width: AppSpacing.sm),
+          IconButton(
+            tooltip: 'تنظیم اتصال',
+            color: AppColors.ink,
+            onPressed: busy ? null : openSettings,
+            icon: const Icon(Icons.tune_rounded),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(width: AppSpacing.md),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (busy)
+            const LinearProgressIndicator(
+              minHeight: 3,
+              color: AppColors.yellow,
+              backgroundColor: AppColors.cobaltDeep,
+            ),
+          if (error != null)
+            Container(
+              width: double.infinity,
+              color: AppColors.errorSurface,
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.xl,
+                vertical: 10,
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.error_outline_rounded,
+                    color: AppColors.errorInk,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: SelectableText(
+                      error!,
+                      style: const TextStyle(
+                        color: AppColors.errorInk,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'بستن پیام',
+                    color: AppColors.errorInk,
+                    onPressed: () => setState(() => error = null),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+          if (busy)
+            Container(
+              color: AppColors.cobaltDeep,
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppSpacing.xl,
+                vertical: 6,
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.sync_rounded,
+                    size: 16,
+                    color: AppColors.yellow,
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      status,
+                      style: const TextStyle(
+                        color: AppColors.cream,
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (activeJob != null)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.yellow,
+                      ),
+                      onPressed: () async {
+                        try {
+                          await api.request('/jobs/$activeJob/cancel', body: {});
+                        } catch (e) {
+                          if (mounted) setState(() => error = '$e');
+                        }
+                      },
+                      icon: const Icon(Icons.cancel_outlined, size: 16),
+                      label: const Text('لغو کار'),
+                    ),
+                ],
+              ),
+            ),
           Expanded(
-            child: tab == 0
-                ? previewPanel(table)
-                : tab == 1
-                ? transformPanel(table)
-                : chatPanel(),
+            child: LayoutBuilder(
+              builder: (context, c) => c.maxWidth < 900
+                  ? Column(
+                      children: [
+                        if (selected != null) _MobileDatasetStrip(
+                          dataset: selected!,
+                          totalCount: datasets.length,
+                          onOpenDrawer: () =>
+                              _scaffoldKey.currentState?.openDrawer(),
+                        ),
+                        Expanded(child: _buildMainContent()),
+                      ],
+                    )
+                  : Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SizedBox(width: 296, child: _buildSidebar()),
+                        Container(width: 1, color: AppColors.cobaltBorder),
+                        Expanded(child: _buildMainContent()),
+                      ],
+                    ),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget previewPanel(bool table) {
-    if (!table) {
-      return ListView(
-        children: rows
-            .map(
-              (chunk) => Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: SelectableText('${chunk['text'] ?? chunk}'),
-                ),
-              ),
-            )
-            .toList(),
+  Widget _buildMainContent() => LayoutBuilder(
+    builder: (context, constraints) {
+      final narrow = MediaQuery.sizeOf(context).width < 900;
+      if (selected != null && (constraints.maxHeight < 660 || narrow)) {
+        final targetHeight = math.max(constraints.maxHeight, narrow ? 860.0 : 720.0);
+        return SingleChildScrollView(
+          child: SizedBox(height: targetHeight, child: _workspaceBody()),
+        );
+      }
+      return _workspaceBody();
+    },
+  );
+
+  Widget _workspaceBody() {
+    if (selected == null) {
+      final maxMb = capabilities?['limits']?['upload_mb'] as int? ?? 25;
+      final isWide = MediaQuery.sizeOf(context).width >= 900;
+      return EmptyWorkspace(
+        connected: connected,
+        busy: busy,
+        datasetCount: datasets.length,
+        maxUploadMb: maxMb,
+        onUpload: () => guard(upload),
+        onOpenSettings: openSettings,
+        onOpenLibrary: isWide
+            ? null
+            : () => _scaffoldKey.currentState?.openDrawer(),
       );
     }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            const Text(
-              'برای ویرایش، روی سلول کلیک کنید.',
-              style: TextStyle(color: muted, fontSize: 12),
+
+    final current = selected!;
+    final isTable = current['kind'] == 'table';
+    final parentId = current['parent_id'] as String?;
+    final parentDataset = parentId == null
+        ? null
+        : datasets.where((d) => d['id'] == parentId).firstOrNull;
+    final warnings = ((current['warnings'] ?? []) as List)
+        .map((e) => e.toString())
+        .toList();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.xl,
+        AppSpacing.lg,
+        AppSpacing.xl,
+        AppSpacing.lg,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Dataset Hero Header on Cobalt
+          Container(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            decoration: BoxDecoration(
+              color: AppColors.cobaltDeep,
+              borderRadius: BorderRadius.circular(AppRadius.lg),
+              border: Border.all(color: AppColors.cobaltBorder),
             ),
-            TextButton.icon(
-              onPressed: busy ? null : () => guard(appendRow),
-              icon: const Icon(Icons.add, size: 17),
-              label: const Text('افزودن ردیف'),
-            ),
-          ],
-        ),
-        Expanded(
-          child: Card(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: Scrollbar(
-                controller: tableScroll,
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  controller: tableScroll,
-                  scrollDirection: Axis.horizontal,
-                  child: SingleChildScrollView(
-                    child: DataTable(
-                      headingRowColor: const WidgetStatePropertyAll(
-                        Color(0xFFEDF3EE),
-                      ),
-                      columnSpacing: 30,
-                      columns: [
-                        const DataColumn(label: Text('ردیف')),
-                        ...columns.map(
-                          (c) => DataColumn(
-                            label: Text(
-                              c,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                LayoutBuilder(
+                  builder: (context, headerBox) {
+                    final identity = Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(11),
+                          decoration: BoxDecoration(
+                            color: AppColors.yellow,
+                            borderRadius: BorderRadius.circular(AppRadius.md),
+                          ),
+                          child: Icon(
+                            fileFormatIcon(current['name'] as String),
+                            color: AppColors.cobalt,
+                            size: 24,
                           ),
                         ),
-                        const DataColumn(label: Text('')),
-                      ],
-                      rows: List.generate(
-                        rows.length,
-                        (i) => DataRow(
-                          cells: [
-                            DataCell(
+                        const SizedBox(width: AppSpacing.md),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                               Text(
-                                '${offset + i}',
-                                style: const TextStyle(color: muted),
-                              ),
-                            ),
-                            ...columns.map(
-                              (c) => DataCell(
-                                ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: 250,
-                                  ),
-                                  child: Text(
-                                    rows[i][c]?.toString() ?? '—',
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
+                                current['name'] as String,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.cream,
                                 ),
-                                onTap: busy
-                                    ? null
-                                    : () => guard(
-                                        () => editCell(i, c, rows[i][c]),
+                              ),
+                              const SizedBox(height: 4),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  _HeaderStatChip(
+                                    icon: isTable
+                                        ? Icons.table_rows_rounded
+                                        : Icons.segment_rounded,
+                                    label: isTable
+                                        ? '${current['rows']} ردیف'
+                                        : '${current['chunk_count'] ?? rows.length} قطعه',
+                                  ),
+                                  if (isTable)
+                                    _HeaderStatChip(
+                                      icon: Icons.view_column_rounded,
+                                      label: '${columnSpecs.length} ستون',
+                                    ),
+                                  _HeaderStatChip(
+                                    icon: parentId != null
+                                        ? Icons.account_tree_rounded
+                                        : Icons.verified_rounded,
+                                    label: parentId != null
+                                        ? 'نسخهٔ ویرایش‌شده'
+                                        : 'نسخهٔ اصلی',
+                                    accent: parentId != null,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                    final actions = Wrap(
+                      spacing: AppSpacing.sm,
+                      runSpacing: AppSpacing.sm,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        if (parentDataset != null)
+                          TextButton.icon(
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.yellow,
+                            ),
+                            onPressed: busy
+                                ? null
+                                : () => guard(() => select(parentDataset)),
+                            icon: const Icon(
+                              Icons.history_rounded,
+                              size: 18,
+                            ),
+                            label: const Text('بازگشت به نسخهٔ قبلی'),
+                          ),
+                        PopupMenuButton<String>(
+                          enabled: !busy,
+                          tooltip: 'دریافت خروجی',
+                          color: AppColors.cream,
+                          onSelected: (format) => guard(() => export(format)),
+                          itemBuilder: (_) => [
+                            if (isTable)
+                              ...['csv', 'json', 'xlsx', 'parquet'].map(
+                                (f) => PopupMenuItem(
+                                  value: f,
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        fileFormatIcon('file.$f'),
+                                        size: 18,
+                                        color: AppColors.cobalt,
                                       ),
-                              ),
-                            ),
-                            DataCell(
-                              IconButton(
-                                tooltip: 'حذف ردیف',
-                                icon: const Icon(
-                                  Icons.delete_outline,
-                                  size: 18,
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'خروجی ${f.toUpperCase()}',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                                onPressed: busy
-                                    ? null
-                                    : () => guard(() => deleteRow(i)),
+                              ),
+                            const PopupMenuItem(
+                              value: 'original',
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.file_download_rounded,
+                                    size: 18,
+                                    color: AppColors.cobalt,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'دانلود فایل اصلی',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 9,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.cream,
+                              borderRadius: BorderRadius.circular(AppRadius.md),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.download_rounded,
+                                  size: 18,
+                                  color: AppColors.cobalt,
+                                ),
+                                SizedBox(width: 6),
+                                Text(
+                                  'دریافت خروجی',
+                                  style: TextStyle(
+                                    color: AppColors.ink,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                SizedBox(width: 4),
+                                Icon(
+                                  Icons.expand_more_rounded,
+                                  size: 18,
+                                  color: AppColors.cobalt,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+
+                    if (headerBox.maxWidth >= 680) {
+                      return Row(
+                        children: [
+                          Expanded(child: identity),
+                          const SizedBox(width: AppSpacing.md),
+                          actions,
+                        ],
+                      );
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        identity,
+                        const SizedBox(height: AppSpacing.md),
+                        actions,
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: AppSpacing.sm),
+                Row(
+                  children: [
+                    const Icon(
+                      Icons.fingerprint_rounded,
+                      size: 14,
+                      color: AppColors.creamMuted,
+                    ),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: SelectableText(
+                        current['id'] as String,
+                        textDirection: TextDirection.ltr,
+                        style: const TextStyle(
+                          color: AppColors.creamMuted,
+                          fontSize: 11,
                         ),
                       ),
                     ),
-                  ),
+                    const SizedBox(width: 6),
+                    InkWell(
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      onTap: () async {
+                        await Clipboard.setData(
+                          ClipboardData(text: current['id'] as String),
+                        );
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('شناسهٔ نسخه کپی شد.'),
+                            ),
+                          );
+                        }
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(
+                          Icons.copy_rounded,
+                          size: 14,
+                          color: AppColors.yellow,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Text(
-              '${selected!['rows'] == 0 ? 0 : offset + 1} تا ${offset + rows.length} از ${selected!['rows']}',
-              style: const TextStyle(color: muted, fontSize: 12),
-            ),
-            const Spacer(),
-            IconButton(
-              tooltip: 'صفحهٔ قبل',
-              onPressed: busy || offset == 0
-                  ? null
-                  : () => guard(() async {
-                      offset -= pageSize;
-                      await preview();
-                    }),
-              icon: const Icon(Icons.chevron_right),
-            ),
-            IconButton(
-              tooltip: 'صفحهٔ بعد',
-              onPressed: busy || offset + pageSize >= (selected!['rows'] as int)
-                  ? null
-                  : () => guard(() async {
-                      offset += pageSize;
-                      await preview();
-                    }),
-              icon: const Icon(Icons.chevron_left),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget transformPanel(bool table) {
-    if (!table) {
-      return const Center(
-        child: Text(
-          'تبدیل و ویرایش برای داده‌های جدولی در دسترس است. از بخش گفت‌وگو برای بررسی سند استفاده کنید.',
-        ),
-      );
-    }
-    const operations = {
-      'drop_duplicates': 'حذف ردیف‌های تکراری',
-      'drop_nulls': 'حذف ردیف‌های دارای مقدار خالی',
-      'fill_nulls': 'جایگزینی مقادیر خالی',
-      'filter': 'فیلتر ردیف‌ها',
-      'sort': 'مرتب‌سازی',
-      'rename': 'تغییر نام ستون',
-      'drop_columns': 'حذف ستون',
-      'strip': 'حذف فاصلهٔ ابتدا و انتهای متن',
-      'cast': 'تغییر نوع ستون',
-      'calculate': 'ساخت ستون با ضرب در یک عدد',
-    };
-    return SingleChildScrollView(
-      child: Align(
-        alignment: Alignment.topRight,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 650),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'داده را برای قدم بعد آماده کنید.',
-                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 20),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'هر عملیات یک نسخهٔ جدید می‌سازد. برای اجرای چند مرحله، روی نسخهٔ جدید ادامه دهید.',
-                    style: TextStyle(color: muted),
-                  ),
-                  const SizedBox(height: 24),
-                  DropdownButtonFormField<String>(
-                    initialValue: operation,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'عملیات'),
-                    items: operations.entries
-                        .map(
-                          (e) => DropdownMenuItem(
-                            value: e.key,
-                            child: Text(e.value),
+                if (warnings.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppSpacing.md,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.cobalt,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 15,
+                          color: AppColors.yellow,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            warnings.join(' · '),
+                            style: const TextStyle(
+                              color: AppColors.cream,
+                              fontSize: 11.5,
+                            ),
                           ),
-                        )
-                        .toList(),
-                    onChanged: busy
-                        ? null
-                        : (v) => setState(() => operation = v!),
-                  ),
-                  const SizedBox(height: 18),
-                  DropdownButtonFormField<String>(
-                    key: ValueKey(selected!['id']),
-                    initialValue: column,
-                    isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'ستون (برای حذف تکراری / خالی اختیاری است)',
+                        ),
+                      ],
                     ),
-                    items: columns
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: busy ? null : (v) => setState(() => column = v),
-                  ),
-                  if (operation == 'filter') ...[
-                    const SizedBox(height: 18),
-                    DropdownButtonFormField<String>(
-                      initialValue: filterOperator,
-                      decoration: const InputDecoration(labelText: 'شرط'),
-                      items:
-                          const {
-                                'eq': 'برابر',
-                                'ne': 'نابرابر',
-                                'gt': 'بزرگ‌تر',
-                                'gte': 'بزرگ‌تر یا برابر',
-                                'lt': 'کوچک‌تر',
-                                'lte': 'کوچک‌تر یا برابر',
-                                'contains': 'شامل متن',
-                                'is_null': 'خالی است',
-                                'not_null': 'خالی نیست',
-                              }.entries
-                              .map(
-                                (e) => DropdownMenuItem(
-                                  value: e.key,
-                                  child: Text(e.value),
-                                ),
-                              )
-                              .toList(),
-                      onChanged: (v) => setState(() => filterOperator = v!),
-                    ),
-                  ],
-                  if ([
-                    'fill_nulls',
-                    'filter',
-                    'calculate',
-                  ].contains(operation)) ...[
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: value,
-                      decoration: const InputDecoration(
-                        labelText: 'مقدار',
-                        helperText: 'عدد بدون گیومه؛ برای متن عددی از گیومه استفاده کنید.',
-                      ),
-                    ),
-                  ],
-                  if (['rename', 'cast', 'calculate'].contains(operation)) ...[
-                    const SizedBox(height: 18),
-                    TextField(
-                      controller: target,
-                      decoration: InputDecoration(
-                        labelText: operation == 'cast'
-                            ? 'نوع: string / Int64 / Float64 / boolean / datetime64[ns]'
-                            : 'نام جدید ستون',
-                      ),
-                    ),
-                  ],
-                  if (operation == 'sort')
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('مرتب‌سازی صعودی'),
-                      value: ascending,
-                      onChanged: (v) => setState(() => ascending = v),
-                    ),
-                  const SizedBox(height: 24),
-                  FilledButton.icon(
-                    onPressed: busy ? null : () => guard(transform),
-                    icon: const Icon(Icons.check),
-                    label: const Text('اجرا و ذخیرهٔ نسخهٔ جدید'),
                   ),
                 ],
-              ),
+              ],
             ),
           ),
-        ),
-      ),
-    );
-  }
 
-  Widget chatPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Wrap(
-        spacing: 12,
-        runSpacing: 12,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          SizedBox(
-            width: 180,
-            child: DropdownButtonFormField<String>(
-              key: ValueKey(provider),
-              initialValue: provider,
-              decoration: const InputDecoration(labelText: 'ارائه‌دهنده'),
-              items: ['offline', 'openai', 'anthropic']
-                  .map(
-                    (p) => DropdownMenuItem(
-                      value: p,
-                      enabled: capabilities?['providers']?[p] == true,
-                      child: Text(p == 'offline' ? 'محلی (بدون مدل)' : p),
-                    ),
-                  )
-                  .toList(),
-              onChanged: busy
-                  ? null
-                  : (v) => setState(() {
-                      provider = v!;
-                      conversation = null;
-                      scope = [];
-                      messages = [];
-                      artifacts = [];
-                    }),
-            ),
-          ),
-          if (provider != 'offline')
-            SizedBox(
-              width: 260,
-              child: TextField(
-                controller: model,
-                decoration: const InputDecoration(labelText: 'شناسهٔ مدل'),
-                textDirection: TextDirection.ltr,
+          const SizedBox(height: AppSpacing.md),
+
+          // Guided Workflow Mode Navigation Tabs
+          Wrap(
+            spacing: AppSpacing.sm,
+            runSpacing: AppSpacing.sm,
+            children: [
+              _WorkflowTabButton(
+                icon: isTable
+                    ? Icons.table_chart_rounded
+                    : Icons.article_rounded,
+                label: isTable ? 'پیش‌نمایش و ویرایش' : 'متن و قطعه‌ها',
+                selected: tab == 0,
+                onTap: () => setState(() => tab = 0),
               ),
-            ),
-          TextButton.icon(
-            onPressed: busy
-                ? null
-                : () => setState(() {
-                    conversation = null;
-                    scope = [];
-                    messages = [];
-                    artifacts = [];
-                  }),
-            icon: const Icon(Icons.add_comment_outlined, size: 18),
-            label: const Text('گفت‌وگوی تازه'),
+              _WorkflowTabButton(
+                icon: isTable
+                    ? Icons.analytics_rounded
+                    : Icons.manage_search_rounded,
+                label: isTable ? 'تحلیل و آمار' : 'جست‌وجو در سند',
+                selected: tab == 1,
+                onTap: () => setState(() => tab = 1),
+              ),
+              if (isTable)
+                _WorkflowTabButton(
+                  icon: Icons.auto_fix_high_rounded,
+                  label: 'تبدیل داده',
+                  selected: tab == 2,
+                  onTap: () => setState(() => tab = 2),
+                ),
+              _WorkflowTabButton(
+                icon: Icons.forum_rounded,
+                label: 'گفت‌وگو با عامل',
+                selected: tab == 3,
+                onTap: () => setState(() => tab = 3),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: AppSpacing.md),
+
+          // Active Workspace Panel
+          Expanded(
+            child: switch (tab) {
+              0 => DataPreviewPanel(
+                isTable: isTable,
+                rows: rows,
+                columnSpecs: columnSpecs,
+                totalRows: (current['rows'] as num?)?.toInt() ?? rows.length,
+                offset: offset,
+                pageSize: pageSize,
+                busy: busy,
+                scrollController: tableScroll,
+                onAppendRow: appendRow,
+                onEditCell: editCell,
+                onDeleteRow: deleteRow,
+                onPrevPage: () => guard(() async {
+                  offset -= pageSize;
+                  await preview();
+                }),
+                onNextPage: () => guard(() async {
+                  offset += pageSize;
+                  await preview();
+                }),
+                onQuickTransformColumn: isTable
+                    ? (col) => setState(() {
+                        transformColumn = col;
+                        tab = 2;
+                      })
+                    : null,
+                onOpenDocumentSearch: isTable
+                    ? null
+                    : () => setState(() => tab = 1),
+              ),
+              1 => ProfilePanel(
+                dataset: current,
+                cachedProfile: _profilesByDataset[current['id'] as String],
+                busy: busy,
+                onRunProfile: () => guard(runProfile),
+                onJumpToTransform: (op, col) => setState(() {
+                  transformOperation = op;
+                  transformColumn = col;
+                  tab = 2;
+                }),
+                onSearchDocument: searchDocument,
+                onReadNeighbors: readNeighbors,
+              ),
+              2 when isTable => TransformPanel(
+                dataset: current,
+                columnSpecs: columnSpecs,
+                initialOperation: transformOperation,
+                initialColumn: transformColumn,
+                busy: busy,
+                onExecuteSteps: (steps) => guard(
+                  () => mutate('transform_dataset', {'steps': steps}),
+                ),
+              ),
+              _ => ChatPanel(
+                isTable: isTable,
+                provider: provider,
+                capabilities: capabilities,
+                modelController: model,
+                promptController: prompt,
+                messages: messages,
+                artifacts: artifacts,
+                scope: scope,
+                reportFormat: reportFormat,
+                busy: busy,
+                onProviderChanged: (p) => setState(() {
+                  provider = p;
+                  conversation = null;
+                  scope = [];
+                  messages = [];
+                  artifacts = [];
+                }),
+                onReportFormatChanged: (f) => setState(() => reportFormat = f),
+                onResetChat: _resetChat,
+                onSend: () => guard(send),
+                onGenerateReport: () => guard(() => send(report: true)),
+                onInspectCitation: inspectCitation,
+                onDownloadArtifact: (a) => guard(() => downloadArtifact(a)),
+              ),
+            },
           ),
         ],
       ),
-      if (provider == 'offline')
-        const Padding(
-          padding: EdgeInsets.only(top: 12),
+    );
+  }
+}
+
+class _MobileDatasetStrip extends StatelessWidget {
+  final Json dataset;
+  final int totalCount;
+  final VoidCallback onOpenDrawer;
+
+  const _MobileDatasetStrip({
+    required this.dataset,
+    required this.totalCount,
+    required this.onOpenDrawer,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    color: AppColors.cobaltDeep,
+    padding: const EdgeInsets.symmetric(
+      horizontal: AppSpacing.lg,
+      vertical: AppSpacing.sm,
+    ),
+    child: Row(
+      children: [
+        Icon(
+          fileFormatIcon(dataset['name'] as String),
+          size: 18,
+          color: AppColors.yellow,
+        ),
+        const SizedBox(width: AppSpacing.sm),
+        Expanded(
           child: Text(
-            'حالت محلی فقط پروفایل داده و جست‌وجوی واژه‌ها را ارائه می‌کند. برای اجرای دستور فارسی با مدل، ارائه‌دهنده را روی سرور پیکربندی کنید. ویرایش مستقیم همیشه در دسترس است.',
-            style: TextStyle(color: muted, fontSize: 12),
+            'دادهٔ فعال: ${dataset['name']}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: AppColors.cream,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
-      const SizedBox(height: 12),
-      Expanded(
-        child: ListView(
+        TextButton.icon(
+          style: TextButton.styleFrom(foregroundColor: AppColors.yellow),
+          onPressed: onOpenDrawer,
+          icon: const Icon(Icons.swap_horiz_rounded, size: 17),
+          label: Text('تغییر ($totalCount)'),
+        ),
+      ],
+    ),
+  );
+}
+
+class _HeaderStatChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool accent;
+
+  const _HeaderStatChip({
+    required this.icon,
+    required this.label,
+    this.accent = false,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+    decoration: BoxDecoration(
+      color: accent ? AppColors.yellow : AppColors.cobalt,
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      border: Border.all(
+        color: accent ? AppColors.yellow : AppColors.cobaltBorder,
+      ),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 14,
+          color: accent ? AppColors.ink : AppColors.yellow,
+        ),
+        const SizedBox(width: 5),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w700,
+            color: accent ? AppColors.ink : AppColors.cream,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _WorkflowTabButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _WorkflowTabButton({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: selected ? AppColors.yellow : AppColors.cobaltDeep,
+    borderRadius: BorderRadius.circular(AppRadius.md),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(
+            color: selected ? AppColors.yellow : AppColors.cobaltBorder,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            if (messages.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 26),
-                child: Text(
-                  'می‌خواهید چه چیزی دربارهٔ این داده بدانید؟\nمثلاً: «مقادیر خالی را بررسی کن» یا «فروش هر منطقه را مقایسه کن».',
-                  style: TextStyle(fontSize: 17, color: muted),
-                ),
-              ),
-            ...messages.map(
-              (message) => Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: message['role'] == 'user'
-                        ? const Color(0xFFE6F2EC)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        message['role'] == 'user' ? 'شما' : 'داده‌یار',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: accent,
-                        ),
-                      ),
-                      SelectableText('${message['text']}'),
-                      ...((message['limitations'] ?? []) as List).map(
-                        (l) => Text(
-                          'محدودیت: $l',
-                          style: const TextStyle(color: muted, fontSize: 12),
-                        ),
-                      ),
-                      ...((message['citations'] ?? []) as List).map(
-                        (c) => TextButton.icon(
-                          onPressed: busy
-                              ? null
-                              : () => guard(() async {
-                                  final result = await api.request(
-                                    '/results/${c['result_id']}',
-                                  );
-                                  if (!mounted) return;
-                                  await showDialog<void>(
-                                    context: context,
-                                    builder: (ctx) => AlertDialog(
-                                      title: const Text('شواهد محاسبه‌شده'),
-                                      content: SizedBox(
-                                        width: 600,
-                                        child: SingleChildScrollView(
-                                          child: SelectableText(
-                                            const JsonEncoder.withIndent('  ')
-                                                .convert(result['data']),
-                                            textDirection: TextDirection.ltr,
-                                          ),
-                                        ),
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () => Navigator.pop(ctx),
-                                          child: const Text('بستن'),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                          icon: const Icon(Icons.fact_check_outlined, size: 16),
-                          label: Text(
-                            'مشاهدهٔ شاهد ${c['result_id'].toString().substring(0, 14)}',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            Icon(
+              icon,
+              size: 18,
+              color: selected ? AppColors.ink : AppColors.yellow,
             ),
-            ...artifacts.map(
-              (a) => ListTile(
-                leading: const Icon(Icons.download),
-                title: Text(a['filename'] as String),
-                onTap: busy ? null : () => guard(() => downloadArtifact(a)),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: selected ? AppColors.ink : AppColors.cream,
               ),
             ),
           ],
         ),
       ),
-      const SizedBox(height: 10),
-      TextField(
-        controller: prompt,
-        minLines: 2,
-        maxLines: 4,
-        decoration: const InputDecoration(
-          hintText: 'درخواست خود را به فارسی بنویسید…',
-          labelText: 'پیام به عامل',
-        ),
-      ),
-      const SizedBox(height: 10),
-      Wrap(
-        spacing: 10,
-        runSpacing: 8,
-        children: [
-          FilledButton.icon(
-            onPressed: busy ? null : () => guard(send),
-            icon: const Icon(Icons.arrow_upward, size: 18),
-            label: const Text('ارسال پیام'),
-          ),
-          OutlinedButton.icon(
-            onPressed: busy ? null : () => guard(() => send(report: true)),
-            icon: const Icon(Icons.article_outlined, size: 18),
-            label: const Text('ساخت گزارش فارسی (HTML)'),
-          ),
-        ],
-      ),
-    ],
+    ),
   );
 }
